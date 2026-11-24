@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HIT, STAY</title>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<style>
+*{box-sizing:border-box}
+body{
+ margin:0;background:#111214;color:#eee;
+ font-family:Arial,sans-serif;
+}
+header{text-align:center;padding:25px 10px}
+h1{color:#c9a45d;letter-spacing:7px;font-size:32px}
+.sub{color:#777;font-size:11px;letter-spacing:4px}
+main{max-width:750px;margin:auto;padding:12px}
+.panel{
+ background:#1d1e22;border:1px solid #414146;
+ border-radius:12px;padding:18px;margin-bottom:15px
+}
+input{
+ width:100%;padding:14px;background:#292a30;
+ color:white;border:1px solid #555;
+ border-radius:7px;margin:7px 0;font-size:16px
+}
+button{
+ border:0;border-radius:7px;padding:14px;
+ font-weight:bold;font-size:15px;cursor:pointer
+}
+.gold{background:#c5a15b;color:#171717}
+.dark{background:#41434a;color:white}
+.full{width:100%;margin:5px 0}
+.hidden{display:none!important}
+.label{color:#999;font-size:11px;letter-spacing:2px}
+#target{
+ font-size:65px;color:#d5b66e;
+ text-align:center;font-weight:bold;margin:10px
+}
+#players{
+ display:grid;grid-template-columns:repeat(2,1fr);
+ gap:10px
+}
+.player{
+ background:#292a30;border:1px solid #494a50;
+ border-radius:9px;padding:13px;min-width:0
+}
+.player.me{border:2px solid #c5a15b}
+.cards{display:flex;flex-wrap:wrap;gap:5px;margin-top:12px}
+.card{
+ width:38px;height:53px;background:#eee;color:#111;
+ border-radius:5px;display:flex;
+ align-items:center;justify-content:center;
+ font-size:21px;font-weight:bold
+}
+.card.back{
+ background:linear-gradient(135deg,#273047,#45516c);
+ color:#d6b46a;border:1px solid #c5a15b
+}
+.small{font-size:12px;color:#aaa;margin-top:8px}
+.actions{display:flex;gap:12px}
+.actions button{width:50%;padding:19px;font-size:20px}
+.hit{background:#c5a15b;color:#111}
+.stay{background:#41434a;color:white}
+button:disabled{opacity:.4}
+#message{text-align:center;color:#d6b66c;padding:15px}
+#codeDisplay{font-size:28px;letter-spacing:5px;color:#d6b66c}
+@media(max-width:430px){
+ #players{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+<header>
+ <h1>HIT, STAY</h1>
+ <div class="sub">THE STRATEGY CARD GAME</div>
+</header>
+
+<main>
+<section id="gate" class="panel">
+ <h3>게임 입장</h3>
+ <input id="name" placeholder="닉네임 입력" maxlength="12">
+ <button class="gold full" onclick="createRoom()">새 게임 만들기</button>
+ <hr style="border-color:#444;margin:20px 0">
+ <input id="roomInput" placeholder="초대 코드 입력">
+ <button class="dark full" onclick="joinRoom()">친구 게임 참가</button>
+ <p class="small">최대 8명까지 참여할 수 있습니다.</p>
+</section>
+
+<section id="game" class="hidden">
+ <div class="panel">
+  <div class="label">ROOM CODE</div>
+  <div id="codeDisplay"></div>
+  <button class="dark full" onclick="copyCode()">초대 코드 복사</button>
+  <p id="phaseText" class="small">대기 중</p>
+ </div>
+
+ <div class="panel">
+  <div class="label" style="text-align:center">TARGET NUMBER</div>
+  <div id="target">?</div>
+  <div id="deckLeft" class="small" style="text-align:center"></div>
+ </div>
+
+ <div class="panel">
+  <div class="label">PLAYERS</div>
+  <br>
+  <div id="players"></div>
+ </div>
+
+ <div class="panel">
+  <div id="actions" class="actions hidden">
+   <button class="hit" onclick="sendAction('HIT')">HIT</button>
+   <button class="stay" onclick="sendAction('STAY')">STAY</button>
+  </div>
+
+  <div id="hostControls" class="hidden">
+   <button class="gold full" onclick="startGame()">게임 시작</button>
+  </div>
+
+  <div id="restart" class="hidden">
+   <button class="gold full" onclick="restartGame()">다시 하기</button>
+  </div>
+
+  <div id="message">친구들을 초대하세요.</div>
+ </div>
+</section>
+</main>
+
+<script>
+let peer=null;
+let conn=null;
+let hostPeer=null;
+let isHost=false;
+let myId=null;
+let roomCode='';
+let room=null;
+let counter=0;
+
+function makeDeck(){
+ let d=[];
+ [7,6,5,4,3,2,1,-1].forEach((v,i)=>{
+  let n=[1,2,3,4,5,6,7,7][i];
+  for(let j=0;j<n;j++)d.push(v);
+ });
+ for(let i=d.length-1;i>0;i--){
+  let j=Math.floor(Math.random()*(i+1));
+  [d[i],d[j]]=[d[j],d[i]];
+ }
+ return d;
+}
+
+function createRoom(){
+ let name=document.getElementById('name').value.trim();
+ if(!name)return alert('닉네임을 입력하세요.');
+
+ roomCode=Math.random().toString(36)
+ .substring(2,8).toUpperCase();
+
+ hostPeer=new Peer('hs-'+roomCode);
+
+ hostPeer.on('open',()=>{
+  isHost=true;
+  myId='host';
+  room={
+   phase:'lobby',
+   target:null,
+   deck:[],
+   players:[{
+    id:'host',name:name,cards:[],
+    stayed:false,connected:true,conn:null
+   }]
+  };
+  showGame();
+  broadcast();
+ });
+
+ hostPeer.on('connection',c=>{
+  c.on('data',data=>handleHostData(c,data));
+  c.on('close',()=>handleDisconnect(c));
+ });
+
+ hostPeer.on('error',e=>{
+  alert('방 생성 오류: '+e.type+' 다시 시도해 주세요.');
+ });
+}
+
+function joinRoom(){
+ let name=document.getElementById('name').value.trim();
+ roomCode=document.getElementById('roomInput')
+ .value.trim().toUpperCase();
+
+ if(!name||!roomCode)
+  return alert('닉네임과 초대 코드를 입력하세요.');
+
+ peer=new Peer();
+
+ peer.on('open',()=>{
+  conn=peer.connect('hs-'+roomCode);
+
+  conn.on('open',()=>{
+   conn.send({type:'JOIN',name:name});
+  });
+
+  conn.on('data',data=>{
+   if(data.type==='ERROR'){
+    alert(data.message);
+    return;
+   }
+   if(data.type==='WELCOME'){
+    myId=data.id;
+    showGame();
+    render(data.state);
+   }
+   if(data.type==='STATE'){
+    render(data.state);
+   }
+  });
+
+  conn.on('error',()=>alert('연결 오류가 발생했습니다.'));
+  conn.on('close',()=>alert('방 연결이 종료되었습니다.'));
+ });
+
+ peer.on('error',()=>alert('방을 찾을 수 없습니다.'));
+}
+
+function showGame(){
+ document.getElementById('gate').classList.add('hidden');
+ document.getElementById('game').classList.remove('hidden');
+ document.getElementById('codeDisplay').innerText=roomCode;
+}
+
+function handleHostData(c,data){
+ if(data.type==='JOIN'){
+  if(room.phase!=='lobby'){
+   c.send({type:'ERROR',message:'이미 게임이 시작되었습니다.'});
+   return;
+  }
+
+  if(room.players.length>=8){
+   c.send({type:'ERROR',message:'방이 가득 찼습니다.'});
+   return;
+  }
+
+  let p={
+   id:'p'+(++counter),
+   name:String(data.name).slice(0,12),
+   cards:[],
+   stayed:false,
+   connected:true,
+   conn:c
+  };
+
+  room.players.push(p);
+  c.send({type:'WELCOME',id:p.id,state:getState(p.id)});
+  broadcast();
+ }
+
+ if(data.type==='ACTION'){
+  let p=room.players.find(x=>x.conn===c);
+  if(p)action(p.id,data.action);
+ }
+}
+
+function handleDisconnect(c){
+ if(!room)return;
+ let p=room.players.find(x=>x.conn===c);
+ if(!p)return;
+
+ p.connected=false;
+ if(room.phase==='playing')p.stayed=true;
+ if(room.phase==='lobby'){
+  room.players=room.players.filter(x=>x!==p);
+ }
+ checkEnd();
+ broadcast();
+}
+
+function startGame(){
+ if(!isHost||room.phase!=='lobby')return;
+
+ room.players=room.players.filter(p=>p.connected);
+
+ if(room.players.length<2)
+  return alert('친구가 한 명 이상 필요합니다.');
+
+ room.deck=makeDeck();
+ room.target=5+Math.floor(Math.random()*8);
+
+ room.players.forEach(p=>{
+  p.cards=[];
+  p.stayed=false;
+
+  for(let i=0;i<3;i++){
+   p.cards.push({
+    value:room.deck.pop(),
+    public:i===0
+   });
+  }
+ });
+
+ room.phase='playing';
+ broadcast();
+}
+
+function action(id,type){
+ if(room.phase!=='playing')return;
+
+ let p=room.players.find(x=>x.id===id);
+ if(!p||p.stayed)return;
+
+ if(type==='HIT'){
+  if(room.deck.length===0){
+   p.stayed=true;
+  }else{
+   p.cards.push({
+    value:room.deck.pop(),
+    public:true
+   });
+  }
+ }
+
+ if(type==='STAY')p.stayed=true;
+
+ checkEnd();
+ broadcast();
+}
+
+function checkEnd(){
+ if(room
